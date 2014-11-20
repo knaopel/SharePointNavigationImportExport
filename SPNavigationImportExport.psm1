@@ -268,7 +268,3 @@ function Get-NavTermSetFromTaxonomy {
 }
 
 #endregion
-
-#Export-SPNavigation -SiteUrl "http://qa.livgov.com" -OutputXmlPath 'D:\Nav Backups\qa.livgov.com.xml'
-Import-SPNavigation -SiteUrl "http://qa2.livgov.com" -InputXmlPath 'D:\Nav Backups\qa.livgov.com.xml'
-#Create-SimpleLink -WebUrl http://qa2.livgov.com -NavigationName "My Link" -NavigationUrl "/Pages/default.aspx"
