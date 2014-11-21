@@ -198,19 +198,35 @@ function Import-SPNavigation {
 function New-WebNavigation {
     param(
     [Parameter(Mandatory = $true)]
-    [string]$Title,
-    [Parameter(Mandatory = $true)]
+    [string]$Url,
+    [Parameter(Mandatory = $false)]
     [PSObject]$GlobalNavigation,
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [PSObject]$CurrentNavigation
     )
     
     $webNavigation = New-Object PSObject
-    $webNavigation | Add-Member -MemberType NoteProperty -Name "Url" -Value $web.ServerRelativeUrl
+    $webNavigation | Add-Member -MemberType NoteProperty -Name "Url" -Value $Url
     $webNavigation | Add-Member -MemberType NoteProperty -Name "GlobalNavigation" -Value $GlobalNavigation
     $webNavigation | Add-Member -MemberType NoteProperty -Name "CurrentNavigation" -Value $CurrentNavigation
     
     return $webNavigation
+}
+
+function New-NavigationSet {
+	param(
+    [Parameter(Mandatory = $true)]
+    [guid]$Id,
+    [Parameter(Mandatory = $true)]
+    [String]$Title
+    )
+    
+	$navSet = New-Object PSObject
+	$navSet | Add-Member -MemberType NoteProperty -Name "Id" -Value $Id
+	$navSet | Add-Member -MemberType NoteProperty -Name "Title" -Value $Title
+	$navSet | Add-Member -MemberType NoteProperty -Name "NavigationNodes" -Value @()
+	
+	return $navSet
 }
 
 function New-NavigationNode {
@@ -325,78 +341,81 @@ function Enumerate-Collection {
     }
     
     $NavNodes | % {
-#        $type = [Microsoft.SharePoint.Publishing.NodeTypes]::None
-#        if ([Microsoft.SharePoint.Publishing.NodeTypes]$_.Properties["NodeType"] -ne $null -and (-not [string]::IsNullOrEmpty($_.Properties["NodeType"].ToString()))) {
-#            $type = [Microsoft.SharePoint.Publishing.NodeTypes]$_.Properties["NodeType"]
-#        }
-        
-#        if ($IsGlobal) {
-#            if (($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Area -and (-not $PublishingWeb.Navigation.GlobalIncludeSubSites)) -or ($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Page -and (-not $PublishingWeb.Navigation.GlobalIncludePages))) {
-#                return
-#            }
-#        } else {
-#            if (($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Area -and (-not $PublishingWeb.Navigation.CurrentIncludeSubSites)) -or ($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Page -and (-not $PublishingWeb.Navigation.CurrentIncludePages))) {
-#                return
-#            }
-#        }
-#        
-
 		if ((Get-NodeVisiblity -SPNavNode $_ -PublishingWeb $PublishingWeb -IsGlobal:$IsGlobal)) {
 			$childNode = New-NavigationNode -Title $_.Title -Url $_.Url
 			$ParentNode.NavigationNodes += $childNode
-			Write-Host "$tabs`"$($_.Title)`" - Visible: $($ChildNode)"
+			Write-Host "$tabs`"$($_.Title)`" - Url: $($_.Url)"
 			if ($_.Children.Count -gt 0) {	
 				Enumerate-Collection -PublishingWeb $PublishingWeb -NavNodes $_.Children -ParentNode $childNode
 			}
 		}
-<#		
-        #region Determine Visibility
-		
-		if ($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Area) {
-			[Microsoft.SharePoint.SPWeb]$web = $null
-			try {
-				$name = $_.Url.Trim('/')
-				if ($name.Length -ne 0 -and $name.IndexOf("/") -gt 0) {
-					$name = $name.Substring($name.LastIndexOf("/") + 1)
-				}
-				
-				try {
-					$web = $PublishingWeb.Web.Webs[$name]
-				} catch [System.ArgumentException] {
-				}
-				
-				if ($web -ne $null -and $web.Exists -and $web.ServerRelativeUrl.ToLower() -eq $_.Url.ToLower() -and [Microsoft.SharePoint.Publishing.PublishingWeb]::IsPublishingWeb($web)) {
-					$tempPubWeb = [Microsoft.SharePoint.Publishing.PublishingWeb]::GetPublishingWeb($web)
-					if (($IsGlobal -and $tempPubWeb.IncludeInGlobalNavigation) -or $tempPubWeb.IncludeInCurrentNavigation) {
-						$childNode = New-NavigationNode -Title $_.Title -Url $_.Url
-						$ParentNode.NavigationNodes += $childNode
-					}
-				}
-			} finally {
-				if ($web -ne $null) {
-					$web.Dispose()
-				}
-			}
-		} elseif ($type -eq [Microsoft.SharePoint.Publishing.NodeTypes]::Page) {
-			[Microsoft.SharePoint.Publishing.PublishingPage]$page = $null
-			try {
-				$page = $PublishingWeb.GetPublishingPages()[$_.Url]
-			} catch [System.ArgumentException] {
-			}
-			
-			if ($page -ne $null) {
-				if (($IsGlobal -and $page.IncludeInGlobalNavigation) -or $page.IncludeInCurrentNavigation) {
-					$childNode = New-NavigationNode -Title $_.Title -Url $_.Url
-					$ParentNode.NavigationNodes += $childNode
-				}
-			}
-		}		
-        #endregion
-#>		
     }
 }
 
+function Get-NavNodesFromPortal {
+	param(
+	[Parameter(Mandatory = $true)]
+	[Microsoft.SharePoint.Navigation.SPNavigationNodeCollection]$NavigationNodes,
+	[Parameter()]
+	[switch]$IsGlobal
+	)
+	
+	$nodes = @()
+	$w = $NavigationNodes.Navigation.Web
+	if ([Microsoft.SharePoint.Publishing.PublishingWeb]::IsPublishingWeb($w)) {
+		$pubWeb = [Microsoft.SharePoint.Publishing.PublishingWeb]::GetPublishingWeb($w)
+		$NavigationNodes | % {
+			if ((Get-NodeVisiblity -SPNavNode $_ -PublishingWeb $pubWeb -IsGlobal:$IsGlobal)) {
+				$navNode = New-NavigationNode -Title $_.Title -Url $_.Url
+				$navNode.NavigationNodes = Get-NavNodesFromPortal -NavigationNodes $_.Children
+				$nodes += $navNode
+			}
+		}
+	}
+	
+	$w.Dispose()
+	
+	return $nodes
+}
+
+function Get-NavTermSetFromTaxonomy {
+	param(
+		[Parameter(Mandatory = $false)]
+    	[Microsoft.SharePoint.Publishing.Navigation.NavigationTermSet]$NavigationTermSet
+	)
+	
+	if($NavigationTermSet -eq $null) {
+		return $null
+	} else {
+		$navTermSet = New-Object PSObject
+		$navTermSet | Add-Member -MemberType NoteProperty -Name "Id" -Value $NavigationTermSet.Id
+		$navTermSet | Add-Member -MemberType NoteProperty -Name "Title" -Value $NavigationTermSet.Title.ToString()
+		$navTermSet | Add-Member -MemberType NoteProperty -Name "NavigationNodes" -Value (Get-NavNodesFromTerms -Terms $NavigationTermSet.Terms)
+		
+		return $navTermSet
+	}
+}
+
 function Get-NavTermSetFromPortal {
+	param(
+	[Parameter()]
+	[Microsoft.SharePoint.Publishing.PublishingWeb]$PublishingWeb,
+	[Parameter(Mandatory = $true)]
+	[Microsoft.SharePoint.Navigation.SPNavigationNodeCollection]$NavigationNodes,
+	[Parameter()]
+	[Switch]$IsGlobal
+	)
+	
+#	if ($IsGlobal) {
+#		$NavigationNodes = $PublishingWeb.Navigation.GlobalNavigationNodes
+#	} else {
+#		$NavigationNodes = $PublishingWeb.Navigation.CurrentNavigationNodes
+#	}
+	
+	$navSet = New-NavigationSet -Id ([Guid]::NewGuid()) -Title $NavigationNodes.Navigation.Web.Title
+	$navSet.NavigationNodes = Get-NavNodesFromPortal -NavigationNodes $NavigationNodes -IsGlobal:$IsGlobal
+#	Enumerate-Collection -PublishingWeb $PublishingWeb -NavNodes $NavigationNodes -ParentNode $navSet.NavigationNodes
+	return $navSet
 }
 
 function Export-SPNavigation {
@@ -412,9 +431,24 @@ function Export-SPNavigation {
 	$NavTermSets = @()
 
     if ($pubAsm.FullName -match "14") {
-
+		Get-SPWeb -Site $SiteUrl -Limit ALL | % {
+			if ([Microsoft.SharePoint.Publishing.PublishingWeb]::IsPublishingWeb($_)) {
+				$pubWeb = [Microsoft.SharePoint.Publishing.PublishingWeb]::GetPublishingWeb($_)
+				$globalNav = $null
+				$currentNav = $null
+				if (-not $pubWeb.Navigation.InheritGlobal) {
+					$globalNav = Get-NavTermSetFromPortal -PublishingWeb $pubWeb -NavigationNodes $pubWeb.Navigation.GlobalNavigationNodes -IsGlobal
+				}
+				
+				if (-not $pubWeb.Navigation.InheritCurrent) {
+					$currentNav = Get-NavTermSetFromPortal -PublishingWeb $pubWeb -NavigationNodes $pubWeb.Navigation.CurrentNavigationNodes
+				}
+				$webNavigation = New-WebNavigation -Url $_.ServerRelativeUrl -GlobalNavigation $globalNav -CurrentNavigation $currentNav
+				$NavTermSets += $webNavigation
+			}
+		}
     } else {
-    	Get-SPWeb -Site $SiteUrl -Limit All | % {
+		Get-SPWeb -Site $SiteUrl -Limit All | % {
     	    $web = $_
     	    $navSettings = New-Object -TypeName Microsoft.SharePoint.Publishing.Navigation.WebNavigationSettings -ArgumentList $web
     	    $site = $web.Site
@@ -456,32 +490,14 @@ function Get-NavNodesFromTerms {
 	return $nodes
 }
 
-function Get-NavTermSetFromTaxonomy {
-	param(
-		[Parameter(Mandatory = $false)]
-    	[Microsoft.SharePoint.Publishing.Navigation.NavigationTermSet]$NavigationTermSet
-	)
-	
-	if($NavigationTermSet -eq $null) {
-		return $null
-	} else {
-		$navTermSet = New-Object PSObject
-		$navTermSet | Add-Member -MemberType NoteProperty -Name "Id" -Value $NavigationTermSet.Id
-		$navTermSet | Add-Member -MemberType NoteProperty -Name "Title" -Value $NavigationTermSet.Title.ToString()
-		$navTermSet | Add-Member -MemberType NoteProperty -Name "NavigationNodes" -Value (Get-NavNodesFromTerms -Terms $NavigationTermSet.Terms)
-		
-		return $navTermSet
-	}
-}
-
 #endregion
 
-#Export-SPNavigation -SiteUrl "http://qa.livgov.com" -OutputXmlPath 'D:\Nav Backups\qa.livgov.com.xml'
+Export-SPNavigation -SiteUrl "http://www.oakgov.com" -OutputXmlPath D:\NavBackups\www.oakgov.com.xml
 #Import-SPNavigation -SiteUrl "http://qa2.livgov.com" -InputXmlPath 'D:\Nav Backups\qa.livgov.com.xml'
 #Create-SimpleLink -WebUrl http://qa2.livgov.com -NavigationName "My Link" -NavigationUrl "/Pages/default.aspx"
-$tabs = ""
-$w = Get-SPWeb -Identity http://www.oakgov.com/aviation
-$pw = [Microsoft.SharePoint.Publishing.PublishingWeb]::GetPublishingWeb($w)
-$pn = New-NavigationNode -Title "Parent Node" -Url ""
-Enumerate-Collection -PublishingWeb $pw -NavNodes $pw.Navigation.CurrentNavigationNodes -ParentNode $pn
-$w.Dispose()
+#$tabs = ""
+#$w = Get-SPWeb -Identity http://www.oakgov.com/aviation
+#$pw = [Microsoft.SharePoint.Publishing.PublishingWeb]::GetPublishingWeb($w)
+#$pn = New-NavigationNode -Title "Parent Node" -Url ""
+#Enumerate-Collection -PublishingWeb $pw -NavNodes $pw.Navigation.CurrentNavigationNodes -ParentNode $pn
+#$w.Dispose()
